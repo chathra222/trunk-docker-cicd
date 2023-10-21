@@ -13,7 +13,13 @@
                     "protocol": "tcp"
                 }
             ],
-            "essential": true
+            "essential": true,
+            "environment": [
+                {
+                    "name": "NEW_FEATURE",
+                    "value": false
+                }
+            ]
         }
     ],
     "requiresCompatibilities": [

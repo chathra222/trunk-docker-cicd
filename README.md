@@ -2,11 +2,13 @@
 
 Creating a feature-flagged Python web application and deploying it through a pipeline involves multiple stages, including writing the application, integrating the feature flag, and setting up a CI/CD pipeline for deployment. 
 
-Step-by-step guide using Flask for the web app, a basic feature flag, GitHub for source control, and GitHub Actions for the CI/CD pipeline.
 
 Step 1: Writing the Flask Application
+
 First, we'll create a simple Flask application. If you don't have Flask installed, you can install it using 
+``````
 pip install Flask
+``````
 Now, create a file named app.py and write your Flask application. Below is a simple web application with a feature flag for demonstration:
 
 ```python
@@ -44,9 +46,11 @@ For easier deployment, you can containerize your application with Docker. Create
 # Use an official Python runtime as a parent image
 FROM python:3.8-slim
 
-# Set environment variables
+#### Set environment variables ####
+# This prevents Python from writing out pyc files
 ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
+#Force the stdout and stderr streams to be unbuffered
+ENV PYTHONUNBUFFERED 1 
 
 # Set work directory
 WORKDIR /app
@@ -70,53 +74,66 @@ Flask==2.0.2 # Use the current version you're working with
 
 Step 3: Setting Up GitHub Actions for CI/CD
 
-In your GitHub repository, navigate to the "Actions" tab and create a new workflow, or manually create a github/workflows directory in your project, then add a workflow file, e.g., ci-cd-pipeline.yml.
+Manually create a .github/workflows directory in your project, then add a workflow file, e.g., ci-cd-pipeline.yml.
 
 Define the following workflow in the ci-cd-pipeline.yml. This configuration sets up a CI/CD pipeline that automatically deploys your Dockerized application when you push to the repository.
 
 ``````
 name: CI/CD Pipeline
+
 on:
   push:
     branches:
-      - main  # Or your default branch
+      - main  
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    environment: dev
 
     steps:
       - name: Check out code
         uses: actions/checkout@v2
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v2
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
         with:
-          context: .
-          push: true
-          tags: your-dockerhub-username/your-repo:latest  # Replace with your Docker Hub username and repository name
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-southeast-1
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+  
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: sctp-my-app
+          IMAGE_TAG: latest
+        run: |
+          # Build a docker container and
+          # push it to ECR so that it can
+          # be deployed to ECS.
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+       # deploy the ECS cluster and related resources(We are using the pushed image to deploy the ECS fargate task)
+      - name: 'Setup Terraform'
+        uses: hashicorp/setup-terraform@v1
 
-  deploy:
-    runs-on: ubuntu-latest
-    needs: build  # Ensures the build job completes before this runs
-    steps:
-      # Steps to deploy the application (e.g., SSH into your server, pull the latest Docker image, and restart your service)
-      # The specific steps can vary depending on your hosting environment and whether you're using a service like AWS ECS, Kubernetes, etc.
+      - name: 'Terraform Init'
+        run: terraform init
+        working-directory: ./terraform
 
-      - name: SSH and deploy  # Example step
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
-          key: ${{ secrets.SSH_KEY }}
-          script: |
-            docker pull your-dockerhub-username/your-repo:latest
-            docker stop my-running-container || true
-            docker rm my-running-container || true
-            docker run -d --name my-running-container -e NEW_FEATURE=true -p 80:5000 your-dockerhub-username/your-repo:latest
+      - name: 'Terraform Plan'
+        run: terraform plan
+        working-directory: ./terraform
+
+      - name: 'Terraform Apply'
+        run: terraform apply -var='environment=[{"name":"NEW_FEATURE","value":"${{ secrets.NEW_FEATURE }}"}]' -auto-approve
+         # Be cautious with auto-approve in production environments
+        working-directory: ./terraform
 ``````
-
-In the deploy job, replace the placeholders with your server's actual SSH details and Docker image information.
 
 
 Step 4: Pushing Your Code
@@ -134,9 +151,22 @@ Push your changes to GitHub:
 ``````
 git push origin main
 ``````
-After you push your code, GitHub Actions triggers the CI/CD pipeline based on your workflow definition. It builds a Docker image from your application, pushes it to Docker Hub (or another registry), and deploys it by pulling the image on your server and running it as a container.
+After you push your code, GitHub Actions triggers the CI/CD pipeline based on your workflow definition and deploys it on ECS cluster as a container.
 
-Please ensure you have the necessary secrets (SSH_HOST, SSH_USERNAME, SSH_KEY) stored in your repository's secrets section. 
+Please ensure you have the necessary secrets (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) stored in your repository's Environment secrets section. Store NEW_FEATURE variable in your repository's Environment variables section.
 
-This example is quite basic, and a real-world scenario would require more robust error checking, rollback strategies, handling of sensitive data, and potentially different strategies for blue/green or canary deployments.
+
+NEW_FEATURE is a feature toggle.
+
+To hide the feature 
+``````
+NEW_FEATURE=false 
+``````
+
+To expose the new feature
+``````
+NEW_FEATURE=true 
+``````
+
+once the feature is ready to deploy,you can turn on the feature by setting NEW_FEATURE=true in your repository's Environment secrets section.
 
